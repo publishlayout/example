@@ -1,0 +1,154 @@
+<?php 
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Ajax\AjaxResponse;
+use Drupal\Core\Ajax\HtmlCommand;
+
+function portfolio_module_form_submit(&$form, FormStateInterface $form_state) {
+  
+  if(!$form_state->hasAnyErrors()) {
+    $phone = $form_state->getValue('field_user_phone');
+    $mail = $form_state->getValue('mail');
+    $user_id = USER_ID;
+    
+    if(!empty($mail)) {
+      $users = \Drupal::entityTypeManager()->getStorage('user')->loadByProperties(['mail' => $mail]);
+      if(!empty($users)) {
+        $user = array_pop($users);
+        $user_id = $user->id();
+      } else {
+        $username = str_replace(['@','-'], '_', $mail);
+        $lang = \Drupal::languageManager()->getCurrentLanguage()->getId();
+        $user = \Drupal\user\Entity\User::create();
+        // Basics
+        $user->setUsername($username);  
+        $user->setPassword('temporary');
+        $user->setEmail($mail);
+        $user->enforceIsNew();  
+        // Optional settings
+        $user->set("langcode", $lang);
+        $user->set("preferred_langcode", $lang);
+        $user->set("field_user_phone", $phone);
+        $user->activate();
+        // Save user
+        $user->save();
+        $user_id = $user->id();
+      }
+    } else {
+      $mail = USER_MAIL;
+    }
+    
+    $variationId = $form_state->getValue('variation_id');
+    $quantity = $form_state->getValue('field_quantity');
+    $quantity = $quantity[0]['value'];
+    
+    $productVariation = \Drupal\commerce_product\Entity\ProductVariation::load($variationId);
+    
+    $order_item = \Drupal\commerce_order\Entity\OrderItem::create([
+      'type' => 'default', 
+      'purchased_entity' => $productVariation,
+      'quantity' => $quantity,
+      'unit_price' => $productVariation->getPrice(),
+    ]);
+    $order_item->save();
+    
+    // create the billing profile.
+    $profile = \Drupal\profile\Entity\Profile::create([
+      'type' => 'customer',
+      'uid' => $user_id,
+      ]);
+    if(array_key_exists('value', $phone[0]) && strlen($phone[0]['value']) > 0) {
+      $profile->set('address', [
+        'organization' => $phone[0]['value'],
+        'country_code' => 'RU',
+        'postal_code' => '000000',
+        'locality' => '-',
+        'address_line1' => '-',
+        'administrative_area' => 'Vladimirskaya oblast',
+        'given_name' => '-',
+        'family_name' => '-',
+      ]);
+    }
+    $profile->save();
+    
+    $store = \Drupal\commerce_store\Entity\Store::load(1);
+    // create the order.
+    $order = \Drupal\commerce_order\Entity\Order::create([
+      'type' => 'default', 
+      'state' => 'draft', 
+      'mail' => $mail, 
+      'uid' => $user_id, 
+      'ip_address' => \Drupal::request()->server->get('REMOTE_ADDR'), 
+      //'order_number' => '', 
+      'billing_profile' => $profile, 
+      'store_id' => $store->id(), 
+      'order_items' => [$order_item], 
+      'placed' => time(), 
+    ]);
+    $order->save();
+  }
+}
+
+function portfolio_module_form_feedback_submit(&$form, FormStateInterface $form_state) {
+  if(!$form_state->hasAnyErrors()) {
+    $name = $form_state->getValue('name');
+    $phone = $form_state->getValue('field_user_phone');
+    $mail = $form_state->getValue('mail');
+    $message = $form_state->getValue('message');
+    
+    $node = \Drupal\node\Entity\Node::create([
+      'type'        => 'contact_feedback_submission',
+      'title'       => 'feedback form',
+      'field_user_name' => $name,
+      'field_user_phone' => $phone[0]['value'],
+      'field_user_mail' => $mail,
+      'body' => $message[0]['value']
+    ]);
+    $node->save();
+  }
+}
+
+function portfolio_module_form_sell_validate(&$form, \Drupal\Core\Form\FormStateInterface $form_state) {
+  $mail = $form_state->getValue('mail');
+  $phone = $form_state->getValue('field_user_phone');
+  
+  if(empty($mail) && empty($phone[0]['value'])) {
+    $form_state->setErrorByName('mail', t('Provide your mail or phone'));
+  }
+  if(!empty($mail)) {
+    \Drupal::service('email.validator')->isValid($mail);
+  }
+}
+
+function portfolio_module_form_sell_ajax(&$form, FormStateInterface $form_state) {
+  $ajax_response = new AjaxResponse();
+  $messenger = \Drupal::messenger();
+  if (!$form_state->hasAnyErrors()) {
+    $ajax_response->addCommand(new HtmlCommand('#form-sell-ajax-wrapper', $form));
+  }
+  $form_messages = [
+    '#theme' => 'status_messages',
+    '#message_list' => $messenger->all(),
+  ];
+  $messenger->deleteAll();
+  $form_messages = \Drupal::service('renderer')->render($form_messages);
+  $ajax_response->addCommand(new HtmlCommand('#form-sell-modal-messages', $form_messages));
+  $ajax_response->addCommand(new \Drupal\Core\Ajax\InvokeCommand('#form-sell-ajax-wrapper', 'trigger', ['reinit']));
+  return $ajax_response;
+}
+
+function portfolio_module_feedback_ajax(&$form, FormStateInterface $form_state) {
+  $ajax_response = new AjaxResponse();
+  $messenger = \Drupal::messenger();
+  if (!$form_state->hasAnyErrors()) {
+    $ajax_response->addCommand(new HtmlCommand('#feedback-ajax-wrapper', $form));
+  }
+  $form_messages = [
+    '#theme' => 'status_messages',
+    '#message_list' => $messenger->all(),
+  ];
+  $messenger->deleteAll();
+  $form_messages = \Drupal::service('renderer')->render($form_messages);
+  $ajax_response->addCommand(new HtmlCommand('#feedback-modal-messages', $form_messages));
+  $ajax_response->addCommand(new \Drupal\Core\Ajax\InvokeCommand('#feedback-ajax-wrapper', 'trigger', ['reinit']));
+  return $ajax_response;
+}
